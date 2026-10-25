@@ -1,0 +1,29 @@
+groups:
+  - name: homelab.rules
+    rules:
+      - alert: HighTemperature
+        expr: homelab_temperature_celsius > 30
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Temperature above expected range'
+          description: 'Home lab temperature is above 30°C for more than 2 minutes.'
+
+      - alert: HighDiskUsage
+        expr: homelab_disk_usage_percent > 85
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Disk usage is high'
+          description: 'Disk usage is above 85%.'
+
+      - alert: SensorApiDown
+        expr: up{job="sensor-api"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'Sensor API is down'
+          description: 'The sensor API is not exporting metrics.'
