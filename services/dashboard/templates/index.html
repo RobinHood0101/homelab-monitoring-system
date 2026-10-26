@@ -1,73 +1,66 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="de">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Homelab Overview</title>
+    <meta http-equiv="refresh" content="15" />
+    <title>JoyPi Sensorübersicht</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}" />
   </head>
-  <body class="{{ theme }}">
+  <body class="dark">
     <div class="page-shell">
       <header class="topbar">
         <div>
           <p class="eyebrow">Smart Homelab Monitoring</p>
-          <h1>HOMELAB OVERVIEW</h1>
+          <h1>JOYPI SENSORÜBERSICHT</h1>
         </div>
         <div class="health-badge">
-          <span>Health</span>
+          <span>Umgebungs-Score</span>
           <strong>{{ status.health_score }} / 100</strong>
         </div>
       </header>
 
       <main class="grid">
         <section class="panel summary-card">
-          <h2>System Status</h2>
-          <p class="status-pill {{ 'warn' if status.lcd_status == 'WARNING' else 'ok' }}">{{ status.lcd_status }}</p>
+          <h2>Live-Messwerte · DHT22</h2>
+          <p class="status-pill {{ 'warn' if status.status == 'WARNING' else 'ok' }}">{{ status.status }}</p>
           <div class="layout-two">
             <div>
-              <label>Temperature</label>
-              <strong>{{ status.temperature }}°C</strong>
+              <label>Temperatur</label>
+              <strong>{{ status.temperature_celsius }} °C</strong>
             </div>
             <div>
-              <label>Humidity</label>
-              <strong>{{ status.humidity }}%</strong>
-            </div>
-            <div>
-              <label>Light</label>
-              <strong>{{ status.light }} lux</strong>
-            </div>
-            <div>
-              <label>Mode</label>
-              <strong>{{ status.mode|upper }}</strong>
+              <label>Luftfeuchtigkeit</label>
+              <strong>{{ status.humidity_percent }} %</strong>
             </div>
           </div>
+          <p class="reading-time">Letzte erfolgreiche Abfrage: {{ status.read_at }}</p>
         </section>
 
         <section class="panel">
-          <h2>Environment</h2>
+          <h2>Sensorstatus</h2>
           <ul class="metrics-list">
-            <li><span>Door</span><strong>{{ 'OPEN' if status.door_open else 'CLOSED' }}</strong></li>
-            <li><span>Motion</span><strong>{{ 'DETECTED' if status.motion_detected else 'IDLE' }}</strong></li>
-            <li><span>CPU</span><strong>{{ status.cpu_usage }}%</strong></li>
-            <li><span>RAM</span><strong>{{ status.memory_usage }}%</strong></li>
-            <li><span>Storage</span><strong>{{ status.disk_usage }}%</strong></li>
-            <li><span>Uptime</span><strong>{{ status.uptime_seconds // 3600 }}h</strong></li>
+            <li><span>Sensor</span><strong>{{ status.sensor }}</strong></li>
+            <li><span>JoyPi-Verbindung</span><strong>{{ 'VERBUNDEN' if status.connected else 'GETRENNT' }}</strong></li>
+            <li><span>Messquelle</span><strong>BCM GPIO 4</strong></li>
+            <li><span>Messwerte</span><strong>Live über SSH</strong></li>
           </ul>
         </section>
 
         <section class="panel wide">
-          <h2>Homelab Health Score</h2>
+          <h2>Umgebungs-Health-Score</h2>
           <div class="health-meter">
             <div class="health-fill" style="width: {{ status.health_score }}%;"></div>
           </div>
           <div class="mini-grid">
-            <div><span>Servers</span><strong>3 / 3</strong></div>
-            <div><span>Temperature</span><strong>{{ status.temperature }}°C</strong></div>
-            <div><span>Humidity</span><strong>{{ status.humidity }}%</strong></div>
-            <div><span>Storage</span><strong>{{ status.disk_usage }}%</strong></div>
+            <div><span>Temperatur</span><strong>{{ status.temperature_celsius }} °C</strong></div>
+            <div><span>Luftfeuchtigkeit</span><strong>{{ status.humidity_percent }} %</strong></div>
+            <div><span>Sensor</span><strong>{{ status.sensor }}</strong></div>
+            <div><span>Verbindung</span><strong>{{ 'OK' if status.connected else 'FEHLER' }}</strong></div>
           </div>
         </section>
       </main>
+      <footer class="reading-time">Daten werden alle 15 Sekunden aktualisiert. Keine simulierten Messwerte.</footer>
     </div>
   </body>
 </html>

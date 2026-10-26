@@ -8,16 +8,25 @@ groups:
           severity: warning
         annotations:
           summary: 'Temperature above expected range'
-          description: 'Home lab temperature is above 30°C for more than 2 minutes.'
+          description: 'The JoyPi DHT22 has measured over 30°C for more than 2 minutes.'
 
-      - alert: HighDiskUsage
-        expr: homelab_disk_usage_percent > 85
+      - alert: LowHumidity
+        expr: homelab_humidity_percent < 20
         for: 5m
         labels:
           severity: warning
         annotations:
-          summary: 'Disk usage is high'
-          description: 'Disk usage is above 85%.'
+          summary: 'Humidity is unusually low'
+          description: 'The JoyPi DHT22 has measured relative humidity below 20% for more than 5 minutes.'
+
+      - alert: HighHumidity
+        expr: homelab_humidity_percent > 70
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Humidity is unusually high'
+          description: 'The JoyPi DHT22 has measured relative humidity above 70% for more than 5 minutes.'
 
       - alert: SensorApiDown
         expr: up{job="sensor-api"} == 0
@@ -25,5 +34,14 @@ groups:
         labels:
           severity: critical
         annotations:
-          summary: 'Sensor API is down'
-          description: 'The sensor API is not exporting metrics.'
+          summary: 'JoyPi sensor data is unavailable'
+          description: 'Prometheus cannot retrieve a live DHT22 reading through the sensor API. Check SSH, the JoyPi and the sensor.'
+
+      - alert: JoyPiSensorDisconnected
+        expr: homelab_sensor_connected == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'JoyPi sensor is disconnected'
+          description: 'The latest DHT22 reading could not be retrieved.'

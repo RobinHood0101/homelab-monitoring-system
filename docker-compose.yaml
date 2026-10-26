@@ -7,6 +7,18 @@ services:
       - '8000:8000'
     environment:
       SENSOR_API_PORT: '8000'
+      JOYPI_SSH_HOST: ${JOYPI_SSH_HOST:-}
+      JOYPI_SSH_USER: ${JOYPI_SSH_USER:-}
+      JOYPI_SSH_PORT: ${JOYPI_SSH_PORT:-22}
+      JOYPI_SSH_KEY_PASSPHRASE: ${JOYPI_SSH_KEY_PASSPHRASE:-}
+      JOYPI_SSH_KEY: /run/secrets/joypi_ed25519
+      JOYPI_KNOWN_HOSTS: /run/secrets/known_hosts
+      JOYPI_PYTHON: ${JOYPI_PYTHON:-python3}
+      JOYPI_AGENT_PATH: ${JOYPI_AGENT_PATH:-}
+      JOYPI_SSH_TIMEOUT_SECONDS: ${JOYPI_SSH_TIMEOUT_SECONDS:-8}
+      SENSOR_CACHE_SECONDS: ${SENSOR_CACHE_SECONDS:-10}
+    volumes:
+      - ./secrets:/run/secrets:ro
     networks:
       - monitoring
     restart: unless-stopped

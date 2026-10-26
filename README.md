@@ -1,47 +1,109 @@
 # Smart Homelab Monitoring System
 
-This project implements the Smart Homelab Monitoring System described in the PDF: a distributed monitoring stack for a home lab with Linux and Windows endpoints, sensor data from a JoyPi, a local status display, and dashboards + alerts for operational visibility.
+Das Monitoring liest jetzt echte Messwerte von einem JoyPi mit Raspberry Pi OS und einem DHT22 an **BCM GPIO 4**. Der Stack läuft auf dem Windows-PC; die Sensor-API verbindet sich per SSH mit dem JoyPi und führt dort den Sensor-Agenten aus. Es gibt keine simulierten Temperatur- oder Feuchtigkeitswerte.
 
-## Included components
+## Komponenten
 
-- Sensor API for temperature, humidity, light, motion, and door state
-- Prometheus metrics collection
-- Grafana dashboards and datasource provisioning
-- Loki + Promtail log collection
-- Dashboard web page with health score and environment overview
-- Alert rules for temperature, disk usage, and sensor API availability
+- JoyPi-Sensor-Agent liest Temperatur und relative Luftfeuchtigkeit vom DHT22.
+- Sensor-API fragt den Agenten per SSH mit geprüftem SSH-Host-Key ab und stellt JSON sowie Prometheus-Metriken bereit.
+- Prometheus speichert Messwerte und wertet Alarmregeln für Temperatur, Luftfeuchtigkeit und Sensorverbindung aus.
+- Grafana enthält ein automatisch eingerichtetes Dashboard für die tatsächlichen DHT22-Messwerte.
+- Loki und Promtail sammeln Container- und Systemlogs.
+- Die Webübersicht zeigt Live-Messwerte und einen aus Temperatur und Feuchtigkeit berechneten Umgebungs-Score.
 
-## Quick start
+Andere Sensoren des ursprünglichen Projektentwurfs (z. B. Helligkeit, Bewegung, Türkontakt oder ein echtes LCD) werden nicht angezeigt, solange sie nicht angeschlossen und implementiert sind.
 
-1. Start the stack:
-   docker compose up --build
-2. Open the dashboard:
-   http://localhost:8081/
-3. Open Grafana:
-   http://localhost:3000/
-   Username: admin
-   Password: admin
-4. Open Prometheus:
-   http://localhost:9090/
+## 1. DHT22 am JoyPi anschließen
 
-## Project structure
+Bei einem DHT22-Sensormodul:
 
-- services/sensor-api — Python FastAPI service exposing Prometheus metrics and JSON status
-- services/dashboard — Flask dashboard with a home-lab overview and health score
-- services/prometheus — Prometheus config and alert rules
-- services/grafana — Grafana provisioning and dashboards
-- services/loki — Loki configuration
-- services/promtail — log collection config
+- VCC an 3,3 V
+- GND an GND
+- DATA an BCM GPIO 4 (physischer Pin 7)
+- Bei einem nackten DHT22 einen 4,7–10 kΩ Pull-up-Widerstand zwischen DATA und 3,3 V verwenden. Viele Module haben den Widerstand bereits eingebaut.
 
-## Main features
+Vor dem Verdrahten den JoyPi ausschalten. Raspberry-Pi-GPIOs sind nicht 5-V-tolerant.
 
-- Real-time overview of CPU, RAM, disk, and environment data
-- Light / dark mode based on ambient light level
-- Homelab health score for a simple overall system status
-- Alerts triggered from Prometheus rules
-- Log ingestion via Loki and visualization in Grafana
-- LCD-style status indicator simulated in the API output
+## 2. Sensor-Agent auf dem JoyPi installieren
 
-## Notes
+Auf dem JoyPi ein Benutzerkonto mit SSH-Zugang verwenden. In PowerShell im Projektordner den Agenten kopieren (Benutzer und IP ersetzen):
 
-This is a working starter implementation of the concept from the PDF. The bundled Node Exporter runs without mounting `/` so it can start under Docker Desktop on Windows; its metrics are from the Docker Linux environment, not the Windows host. To monitor Windows host metrics, install `windows_exporter` on Windows and add `host.docker.internal:9182` as a Prometheus scrape target. On a Linux host, configure a host-mounted Node Exporter for full host metrics. The simulated sensor values can be replaced with readings from a real JoyPi sensor board.
+```powershell
+ssh <BENUTZER>@<JOYPI-IP> "mkdir -p ~/homelab-monitoring"
+scp .\joypi\sensor_agent.py <BENUTZER>@<JOYPI-IP>:homelab-monitoring/sensor_agent.py
+```
+
+Auf dem JoyPi:
+
+```bash
+sudo apt update
+sudo apt install -y python3-venv libgpiod2
+python3 -m venv --system-site-packages ~/homelab-monitoring/.venv
+~/homelab-monitoring/.venv/bin/pip install adafruit-circuitpython-dht==4.0.7
+~/homelab-monitoring/.venv/bin/python ~/homelab-monitoring/sensor_agent.py --json
+```
+
+Der letzte Befehl sollte genau eine JSON-Zeile mit `temperature_celsius` und `humidity_percent` ausgeben. Falls der Zugriff auf GPIO verweigert wird, prüfen, ob der JoyPi-Benutzer Mitglied der GPIO-Gruppe ist, und danach neu anmelden.
+
+## 3. SSH sicher einrichten
+
+Im Projektordner eine SSH-Schlüsseldatei erzeugen:
+
+```powershell
+ssh-keygen -t ed25519 -N "" -f .\secrets\joypi_ed25519
+```
+
+Den öffentlichen Schlüssel zum JoyPi hinzufügen:
+
+```powershell
+Get-Content .\secrets\joypi_ed25519.pub | ssh <BENUTZER>@<JOYPI-IP> "mkdir -p ~/.ssh && cat >> ~/.ssh/authorized_keys && chmod 700 ~/.ssh && chmod 600 ~/.ssh/authorized_keys"
+```
+
+Den SSH-Host-Key des JoyPi in `secrets/known_hosts` eintragen. Mit OpenSSH verfügbarer `ssh-keyscan`-Befehl:
+
+```powershell
+ssh-keyscan -H <JOYPI-IP> | Out-File -Encoding ascii .\secrets\known_hosts
+```
+
+Den Fingerabdruck anschließend mit dem auf dem JoyPi angezeigten SSH-Host-Key-Fingerabdruck vergleichen. Die API weist unbekannte oder geänderte Host-Keys zurück. Private Schlüssel und `known_hosts` liegen im ignorierten Ordner `secrets/` und dürfen nicht ins Repository eingecheckt werden.
+
+## 4. Windows-Stack konfigurieren und starten
+
+```powershell
+Copy-Item .env.example .env
+notepad .env
+```
+
+In `.env` `JOYPI_SSH_HOST`, `JOYPI_SSH_USER`, `JOYPI_PYTHON` und `JOYPI_AGENT_PATH` anpassen. Die beiden Pfade müssen zum JoyPi-Benutzer passen. Standardmäßig sind sie für den Benutzer `pi` eingetragen. Keine Zugangsdaten ins Repository schreiben.
+
+Dann den Stack starten:
+
+```powershell
+docker compose up --build -d
+```
+
+Oberflächen:
+
+- Dashboard: http://localhost:8081/
+- Grafana: http://localhost:3000/ (Standard: `admin` / `admin`)
+- Prometheus: http://localhost:9090/
+- Sensor-API: http://localhost:8000/api/status
+
+Prüfen, ob Prometheus die Sensor-API abfragt:
+
+```powershell
+docker compose logs sensor-api
+Invoke-RestMethod http://localhost:8000/api/status
+```
+
+Bei fehlender SSH-Konfiguration oder nicht erreichbarem JoyPi liefert die API HTTP 503, die Dashboard-Seite zeigt einen Verbindungsfehler, und Prometheus meldet den Sensor als getrennt. Es werden keine Ersatzmesswerte ausgegeben.
+
+## Messwerte und Grenzwerte
+
+- Der Agent liest den DHT22 an BCM GPIO 4 aus; Sensorauslesefehler werden dreimal mit Pause wiederholt.
+- Das API-Ergebnis wird maximal 10 Sekunden zwischengespeichert (`SENSOR_CACHE_SECONDS`).
+- Temperaturwarnung: über 30 °C für 2 Minuten.
+- Luftfeuchtigkeitswarnung: unter 20 % oder über 70 % für 5 Minuten.
+- Der Umgebungs-Score ist eine einfache Bewertung aus Temperatur und Luftfeuchtigkeit, kein allgemeiner Server-Health-Score.
+
+`node-exporter` im Windows-Docker-Stack misst die Linux-Docker-Umgebung, nicht den Windows-PC. Für echte Windows-Systemmetriken muss zusätzlich `windows_exporter` auf dem Windows-PC installiert und als weiteres Prometheus-Ziel konfiguriert werden.

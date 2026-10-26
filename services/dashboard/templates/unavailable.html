@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="de">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta http-equiv="refresh" content="15" />
+    <title>JoyPi nicht erreichbar</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}" />
+  </head>
+  <body class="dark">
+    <main class="page-shell">
+      <p class="eyebrow">Smart Homelab Monitoring</p>
+      <section class="panel unavailable">
+        <h1>Keine Live-Sensordaten</h1>
+        <p>Der DHT22 konnte nicht über SSH vom JoyPi ausgelesen werden.</p>
+        <p>Prüfe JoyPi-Verbindung, SSH-Schlüssel und Host-Key, Sensoranschluss an BCM GPIO 4 sowie den Sensor-Agenten.</p>
+        <p>Diese Seite versucht es in 15 Sekunden erneut. Es werden keine Ersatz- oder Beispieldaten angezeigt.</p>
+      </section>
+    </main>
+  </body>
+</html>

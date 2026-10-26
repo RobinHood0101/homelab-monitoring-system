@@ -11,6 +11,7 @@ scrape_configs:
       - targets: ['localhost:9090']
 
   - job_name: 'sensor-api'
+    scrape_timeout: 20s
     metrics_path: /metrics
     static_configs:
       - targets: ['sensor-api:8000']

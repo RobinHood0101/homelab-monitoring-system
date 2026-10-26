@@ -181,6 +181,23 @@ body.light .panel {
   border-radius: inherit;
 }
 
+.reading-time {
+  color: var(--muted);
+  font-size: 0.82rem;
+  margin-top: 1rem;
+  overflow-wrap: anywhere;
+}
+
+.unavailable {
+  max-width: 720px;
+  margin-top: 2rem;
+}
+
+.unavailable p {
+  color: var(--muted);
+  line-height: 1.6;
+}
+
 .mini-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(130px, 1fr));

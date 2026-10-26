@@ -1,132 +1,184 @@
 from __future__ import annotations
 
+import json
+import logging
 import math
 import os
+import shlex
 import time
+from datetime import datetime, timezone
 from threading import Lock
+from typing import Any
 
-from fastapi import FastAPI
+import paramiko
+from fastapi import FastAPI, HTTPException
 from prometheus_client import CONTENT_TYPE_LATEST, Gauge, generate_latest
 from starlette.responses import Response
 
-app = FastAPI(title='Homelab Sensor API', version='1.0.0')
+logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
+logger = logging.getLogger("homelab.sensor_api")
 
-TEMPERATURE = Gauge('homelab_temperature_celsius', 'Current room temperature in Celsius')
-HUMIDITY = Gauge('homelab_humidity_percent', 'Current humidity percentage')
-LIGHT = Gauge('homelab_light_lux', 'Current ambient light in lux')
-DOOR = Gauge('homelab_door_open', 'Door status: 1 when open, 0 when closed')
-MOTION = Gauge('homelab_motion_detected', 'Motion status: 1 when detected, 0 when idle')
-CPU = Gauge('homelab_cpu_usage_percent', 'Current CPU usage percentage')
-MEMORY = Gauge('homelab_memory_usage_percent', 'Current memory usage percentage')
-DISK = Gauge('homelab_disk_usage_percent', 'Current disk usage percentage')
-UPTIME = Gauge('homelab_uptime_seconds', 'Host uptime in seconds')
-HEALTH = Gauge('homelab_health_score', 'Overall health score from 0 to 100')
+app = FastAPI(title="Homelab Sensor API", version="2.0.0")
+
+TEMPERATURE = Gauge("homelab_temperature_celsius", "Temperature measured by the JoyPi DHT22")
+HUMIDITY = Gauge("homelab_humidity_percent", "Relative humidity measured by the JoyPi DHT22")
+HEALTH = Gauge("homelab_health_score", "Environmental health score from 0 to 100")
+SENSOR_CONNECTED = Gauge("homelab_sensor_connected", "Whether a current DHT22 reading is available")
+LAST_SUCCESS = Gauge("homelab_sensor_last_success_unixtime", "Unix timestamp of the last successful DHT22 reading")
+TEMPERATURE.set(float("nan"))
+HUMIDITY.set(float("nan"))
+HEALTH.set(float("nan"))
+SENSOR_CONNECTED.set(0)
+LAST_SUCCESS.set(0)
 
 state_lock = Lock()
+cached_reading: dict[str, Any] | None = None
+cached_at = 0.0
+CACHE_SECONDS = float(os.getenv("SENSOR_CACHE_SECONDS", "10"))
 
-class SensorState:
-    def __init__(self):
-        self.temperature = 23.0
-        self.humidity = 48.0
-        self.light = 620
-        self.door_open = False
-        self.motion_detected = False
-        self.cpu = 35.0
-        self.memory = 52.0
-        self.disk = 68.0
-        self.uptime_start = time.time()
 
-    def tick(self):
-        t = time.time()
-        cycle = t / 30.0
-        self.temperature = 23.0 + math.sin(cycle) * 4.0 + (self.cpu / 25.0) - 1.0
-        self.humidity = 48.0 + math.cos(cycle * 1.5) * 10.0
-        self.light = max(120, min(1200, 700 + math.sin(cycle * 2.0) * 250 + (30 if self.motion_detected else 0)))
-        self.cpu = max(15.0, min(95.0, 35.0 + math.sin(cycle * 1.7) * 25.0 + (self.door_open * 8.0)))
-        self.memory = max(30.0, min(90.0, 52.0 + math.cos(cycle * 1.1) * 12.0))
-        self.disk = max(45.0, min(95.0, 68.0 + math.sin(cycle * 0.9) * 8.0))
-        self.uptime = max(0.0, time.time() - self.uptime_start)
-        self.health = self.calculate_health_score()
+class SensorReadError(Exception):
+    pass
 
-    def calculate_health_score(self):
-        score = 100.0
-        score -= max(0.0, self.cpu - 80.0) * 0.6
-        score -= max(0.0, self.memory - 80.0) * 0.5
-        score -= max(0.0, self.disk - 80.0) * 0.7
-        score -= max(0.0, self.temperature - 30.0) * 1.2
-        score -= max(0.0, 60.0 - self.light) * 0.02
-        if self.door_open:
-            score -= 8.0
-        if self.motion_detected:
-            score -= 2.0
-        return max(0.0, min(100.0, round(score, 1)))
 
-    def snapshot(self):
-        return {
-            'temperature': round(self.temperature, 1),
-            'humidity': round(self.humidity, 1),
-            'light': int(self.light),
-            'door_open': self.door_open,
-            'motion_detected': self.motion_detected,
-            'cpu_usage': round(self.cpu, 1),
-            'memory_usage': round(self.memory, 1),
-            'disk_usage': round(self.disk, 1),
-            'uptime_seconds': int(self.uptime),
-            'health_score': self.health,
-            'mode': 'dark' if self.light < 500 else 'light',
-            'lcd_status': 'WARNING' if self.temperature > 30 or self.cpu > 80 or self.disk > 85 else 'OK',
+def _required_setting(name: str) -> str:
+    value = os.getenv(name, "").strip()
+    if not value:
+        raise SensorReadError(f"Missing required setting: {name}")
+    return value
+
+
+def _validate_reading(raw: str) -> dict[str, float]:
+    try:
+        payload = json.loads(raw)
+        temperature = float(payload["temperature_celsius"])
+        humidity = float(payload["humidity_percent"])
+    except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+        raise SensorReadError("JoyPi returned invalid sensor JSON") from exc
+
+    if not math.isfinite(temperature) or not -40 <= temperature <= 80:
+        raise SensorReadError("JoyPi returned an invalid temperature")
+    if not math.isfinite(humidity) or not 0 <= humidity <= 100:
+        raise SensorReadError("JoyPi returned invalid humidity")
+    return {
+        "temperature_celsius": round(temperature, 1),
+        "humidity_percent": round(humidity, 1),
+    }
+
+
+def _read_remote_sensor() -> dict[str, float]:
+    host = _required_setting("JOYPI_SSH_HOST")
+    username = _required_setting("JOYPI_SSH_USER")
+    key_path = _required_setting("JOYPI_SSH_KEY")
+    known_hosts_path = _required_setting("JOYPI_KNOWN_HOSTS")
+    python_path = os.getenv("JOYPI_PYTHON", "python3").strip()
+    agent_path = _required_setting("JOYPI_AGENT_PATH")
+    key_passphrase = os.getenv("JOYPI_SSH_KEY_PASSPHRASE") or None
+    port = int(os.getenv("JOYPI_SSH_PORT", "22"))
+    timeout = float(os.getenv("JOYPI_SSH_TIMEOUT_SECONDS", "8"))
+
+    client = paramiko.SSHClient()
+    try:
+        client.load_host_keys(known_hosts_path)
+        client.set_missing_host_key_policy(paramiko.RejectPolicy())
+        client.connect(
+            hostname=host,
+            port=port,
+            username=username,
+            key_filename=key_path,
+            passphrase=key_passphrase,
+            look_for_keys=False,
+            allow_agent=False,
+            timeout=timeout,
+            banner_timeout=timeout,
+            auth_timeout=timeout,
+        )
+        command = f"{shlex.quote(python_path)} {shlex.quote(agent_path)} --json"
+        _, stdout, stderr = client.exec_command(command, timeout=timeout)
+        output = stdout.read().decode("utf-8").strip()
+        error_output = stderr.read().decode("utf-8").strip()
+        exit_status = stdout.channel.recv_exit_status()
+        if exit_status != 0:
+            detail = error_output or f"remote command exited with status {exit_status}"
+            raise SensorReadError(f"JoyPi sensor reader failed: {detail}")
+        return _validate_reading(output)
+    except (OSError, paramiko.SSHException) as exc:
+        raise SensorReadError(f"SSH connection to JoyPi failed: {exc}") from exc
+    finally:
+        client.close()
+
+
+def _health_score(temperature: float, humidity: float) -> float:
+    temperature_penalty = max(0.0, abs(temperature - 22.0) - 3.0) * 4.0
+    humidity_penalty = max(0.0, 35.0 - humidity, humidity - 60.0) * 1.5
+    return round(max(0.0, min(100.0, 100.0 - temperature_penalty - humidity_penalty)), 1)
+
+
+def get_sensor_status() -> dict[str, Any]:
+    global cached_reading, cached_at
+
+    with state_lock:
+        if cached_reading is not None and time.monotonic() - cached_at < CACHE_SECONDS:
+            return cached_reading.copy()
+        try:
+            reading = _read_remote_sensor()
+        except (SensorReadError, ValueError) as exc:
+            TEMPERATURE.set(float("nan"))
+            HUMIDITY.set(float("nan"))
+            HEALTH.set(float("nan"))
+            SENSOR_CONNECTED.set(0)
+            logger.error("Could not read the JoyPi DHT22: %s", exc)
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+        temperature = reading["temperature_celsius"]
+        humidity = reading["humidity_percent"]
+        health = _health_score(temperature, humidity)
+        warning = temperature > 30 or temperature < 15 or humidity > 70 or humidity < 20
+        status = {
+            **reading,
+            "sensor": "DHT22",
+            "connected": True,
+            "health_score": health,
+            "status": "WARNING" if warning else "OK",
+            "read_at": datetime.now(timezone.utc).isoformat(),
         }
+        cached_reading = status
+        cached_at = time.monotonic()
 
-sensor_state = SensorState()
-
-
-def update_metrics():
-    with state_lock:
-        sensor_state.tick()
-        payload = sensor_state.snapshot()
-
-    TEMPERATURE.set(payload['temperature'])
-    HUMIDITY.set(payload['humidity'])
-    LIGHT.set(payload['light'])
-    DOOR.set(1 if payload['door_open'] else 0)
-    MOTION.set(1 if payload['motion_detected'] else 0)
-    CPU.set(payload['cpu_usage'])
-    MEMORY.set(payload['memory_usage'])
-    DISK.set(payload['disk_usage'])
-    UPTIME.set(payload['uptime_seconds'])
-    HEALTH.set(payload['health_score'])
+        TEMPERATURE.set(temperature)
+        HUMIDITY.set(humidity)
+        HEALTH.set(health)
+        SENSOR_CONNECTED.set(1)
+        LAST_SUCCESS.set(time.time())
+        return status.copy()
 
 
-@app.on_event('startup')
-def startup_event():
-    update_metrics()
+@app.get("/health")
+def health_check() -> dict[str, str]:
+    return {"status": "ok"}
 
 
-@app.get('/health')
-def health_check():
-    return {'status': 'ok'}
+@app.get("/ready")
+def readiness_check() -> dict[str, str]:
+    get_sensor_status()
+    return {"status": "ready"}
 
 
-@app.get('/api/status')
-def get_status():
-    with state_lock:
-        payload = sensor_state.snapshot()
-    return payload
+@app.get("/api/status")
+def api_status() -> dict[str, Any]:
+    return get_sensor_status()
 
 
-@app.get('/api/lcd')
-def lcd_status():
-    with state_lock:
-        payload = sensor_state.snapshot()
-    return {'status_line': f"TEMP: {payload['temperature']}C HUM: {payload['humidity']}%" , 'warning': payload['lcd_status'] == 'WARNING'}
-
-
-@app.get('/metrics')
-def metrics():
-    update_metrics()
+@app.get("/metrics")
+def metrics() -> Response:
+    try:
+        get_sensor_status()
+    except HTTPException:
+        pass
     return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host='0.0.0.0', port=int(os.getenv('SENSOR_API_PORT', '8000')))
+
+    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("SENSOR_API_PORT", "8000")))
